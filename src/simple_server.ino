@@ -1,9 +1,3 @@
-/*********
-  Rui Santos & Sara Santos - Random Nerd Tutorials
-  Complete project details at https://RandomNerdTutorials.com/esp32-mpu-6050-web-server/
-  Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.
-  The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-*********/
 #include <Arduino.h>
 #include <WiFi.h>
 #include <AsyncTCP.h>
@@ -28,23 +22,16 @@ AsyncEventSource events("/events");
 JSONVar readings;
 
 // Timer variables
-unsigned long lastTime = 0;  
-unsigned long lastTimeTemperature = 0;
-unsigned long lastTimeAcc = 0;
+unsigned long lastLoopTime = 0;  
 unsigned long gyroDelay = 10;
-unsigned long temperatureDelay = 1000;
-unsigned long accelerometerDelay = 200;
 
 // Create a sensor object
 const int MPU=0x68;
 
-sensors_event_t a, g, temp;
+// Final angles after filtering
+float pitch, roll, yaw;
 
-float gyroX, gyroY, gyroZ;
-float accX, accY, accZ;
-float temperature;
-
-//Gyroscope sensor deviation
+// Gyroscope sensor deviation
 float gyroXerror = 0.07;
 float gyroYerror = 0.03;
 float gyroZerror = 0.01;
@@ -86,67 +73,62 @@ void initWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-String getGyroReadings(){
+String getFilteredReadings(){
   Wire.beginTransmission(MPU);
   Wire.write(0x3B);  // starting with register 0x3B (ACCEL_XOUT_H)
   Wire.endTransmission(false);
   //Solicita os dados do sensor
   Wire.requestFrom(MPU,14,true);  
 
-  float gyroX_temp_raw = Wire.read()<<8|Wire.read();
-  float gyroY_temp_raw = Wire.read()<<8|Wire.read();
-  float gyroZ_temp_raw = Wire.read()<<8|Wire.read();
+  // Get raw values
+  float accX_raw = Wire.read()<<8|Wire.read();
+  float accY_raw = Wire.read()<<8|Wire.read();
+  float accZ_raw = Wire.read()<<8|Wire.read();
+  float temp_raw = Wire.read()<<8|Wire.read();
+  float gyroX_raw = Wire.read()<<8|Wire.read();
+  float gyroY_raw = Wire.read()<<8|Wire.read();
+  float gyroZ_raw = Wire.read()<<8|Wire.read();
 
-  // Sensitivity scale factor for +/- 250 deg/s is 131.0
-  // Convert raw values to degrees per second
-  float gyroX_temp = (gyroX_temp_raw / 131.0) * (PI / 180.0);
-  float gyroY_temp = (gyroY_temp_raw / 131.0) * (PI / 180.0);
-  float gyroZ_temp = (gyroZ_temp_raw / 131.0) * (PI / 180.0);
+  // Convert raw values to Gs
+  float accX = accX_raw / 8192.0;
+  float accY = accY_raw / 8192.0;
+  float accZ = accZ_raw / 8192.0;
 
-  if(abs(gyroX_temp) > gyroXerror) {
-    gyroX += gyroX_temp/50.00;
-  }
+  // Convert raw gyro values to degrees per second
+  float gyroX_temp = gyroX_raw / 131.0;
+  float gyroY_temp = gyroY_raw / 131.0;
+  float gyroZ_temp = gyroZ_raw / 131.0;
 
-  if(abs(gyroY_temp) > gyroYerror) {
-    gyroY += gyroY_temp/70.00;
-  }
+  // Time elapsed since last loop (in seconds)
+  float dt = (millis() - lastLoopTime) / 1000.0;
+  lastLoopTime = millis();
+
+  // ----- Complementary Filter -----
+
+  // Calculate pitch and roll angles from accelerometer
+  float roll_acc = atan2(accY, accZ) * 180 / PI;
+  float pitch_acc = atan2(-accX, sqrt(accY * accY + accZ * accZ)) * 180 / PI;
+  
+  // Apply the complementary filter
+  float alpha = 0.98; // Weight for the gyroscope
+  pitch = alpha * (pitch + gyroX_temp * dt) + (1.0 - alpha) * pitch_acc;
+  roll = alpha * (roll + gyroY_temp * dt) + (1.0 - alpha) * roll_acc;
+  
+  // Yaw (Z-axis) still accumulates since the accelerometer can't measure it
   if(abs(gyroZ_temp) > gyroZerror) {
-    gyroZ += gyroZ_temp/90.00;  
+    yaw += gyroZ_temp * dt;
   }
 
-  readings["gyroX"] = String(gyroX);
-  readings["gyroY"] = String(gyroY);
-  readings["gyroZ"] = String(gyroZ);
-
-  String jsonString = JSON.stringify(readings);
-  return jsonString;
-}
-
-String getAccReadings() {
-  Wire.beginTransmission(MPU);
-  Wire.write(0x3B);  // starting with register 0x3B (ACCEL_XOUT_H)
-  Wire.endTransmission(false);
-  //Solicita os dados do sensor
-  Wire.requestFrom(MPU,14,true);  
-  // Get current acceleration values
-  accX = (Wire.read()<<8|Wire.read()) / 8192.0;  //0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L);
-  accY = (Wire.read()<<8|Wire.read())  / 8192.0;  //0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L);
-  accZ = (Wire.read()<<8|Wire.read())  / 8192.0;  //0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L);
+  readings["pitch"] = String(pitch);
+  readings["roll"] = String(roll);
+  readings["yaw"] = String(yaw);
   readings["accX"] = String(accX);
   readings["accY"] = String(accY);
   readings["accZ"] = String(accZ);
-  String accString = JSON.stringify (readings);
-  return accString;
-}
-
-String getTemperature(){
-  Wire.beginTransmission(MPU);
-  Wire.write(0x3B);  // starting with register 0x3B (ACCEL_XOUT_H)
-  Wire.endTransmission(false);
-  //Solicita os dados do sensor
-  Wire.requestFrom((uint8_t)MPU, (size_t)14, (bool)true);
-  temperature = Wire.read()<<8|Wire.read();  //0x41 (TEMP_OUT_H) & 0x42 (TEMP_OUT_L);
-  return String(temperature);
+  readings["temp"] = String(temp_raw/340.00+36.53); // Converte para °C
+  
+  String jsonString = JSON.stringify(readings);
+  return jsonString;
 }
 
 void setup() {
@@ -159,73 +141,40 @@ void setup() {
     request->send(200, "text/html", createHtml());
   }); 
 
-  // Rotas para dados dos sensores
-  server.on("/gyro", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "application/json", getGyroReadings());
-  });
-
-  server.on("/acc", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "application/json", getAccReadings());
-  });
-
-  server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "text/plain", getTemperature());
-  });
-
-  // Rotas de reset
+  // Remove as rotas individuais de sensores, pois agora teremos apenas uma
+  // As rotas de reset podem continuar
   server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request){
-    gyroX = 0; gyroY = 0; gyroZ = 0;
+    pitch = 0; roll = 0; yaw = 0;
     request->send(200, "text/plain", "OK");
   });
   server.on("/resetX", HTTP_GET, [](AsyncWebServerRequest *request){
-    gyroX = 0;
+    pitch = 0;
     request->send(200, "text/plain", "OK");
   });
   server.on("/resetY", HTTP_GET, [](AsyncWebServerRequest *request){
-    gyroY = 0;
+    roll = 0;
     request->send(200, "text/plain", "OK");
   });
   server.on("/resetZ", HTTP_GET, [](AsyncWebServerRequest *request){
-    gyroZ = 0;
+    yaw = 0;
     request->send(200, "text/plain", "OK");
   });
 
   server.addHandler(&events);
-
   server.begin();
+  lastLoopTime = millis();
 }
 
 void loop() {
-    if ((millis() - lastTime) > gyroDelay) {
+  if ((millis() - lastLoopTime) > gyroDelay) {
     // Send Events to the Web Server with the Sensor Readings
-    events.send(getGyroReadings().c_str(),"gyro_readings",millis());
-    lastTime = millis();
+    events.send(getFilteredReadings().c_str(),"filtered_readings",millis());
   }
-  if ((millis() - lastTimeAcc) > accelerometerDelay) {
-    // Send Events to the Web Server with the Sensor Readings
-    events.send(getAccReadings().c_str(),"accelerometer_readings",millis());
-    lastTimeAcc = millis();
-  }
-  if ((millis() - lastTimeTemperature) > temperatureDelay) {
-    // Send Events to the Web Server with the Sensor Readings
-    events.send(getTemperature().c_str(),"temperature_reading",millis());
-    lastTimeTemperature = millis();
-  }
-  delay(100);
 }
-
 
 String createHtml() {
 
 String html = R"rawliteral( 
-<!--
-        Rui Santos
-        Complete project details at https://RandomNerdTutorials.com/esp32-mpu-6050-web-server/
-
-        Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.
-        The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-        -->
-
         <!DOCTYPE HTML><html>
         <head>
         <title>ESP Web Server</title>
@@ -335,13 +284,6 @@ String html = R"rawliteral(
             </div>
         </div>
         <script>
-                    /*
-            Rui Santos
-            Complete project details at https://RandomNerdTutorials.com/esp32-mpu-6050-web-server/
-
-            Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.
-            The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-            */
 
             let scene, camera, renderer, rocket3D, rocketGroup;
 
@@ -416,43 +358,37 @@ String html = R"rawliteral(
             if (!!window.EventSource) {
               var source = new EventSource('/events');
 
-              source.addEventListener('open', function(e) {
-                  console.log("Events Connected");
-              }, false);
+                source.addEventListener('open', function(e) {
+                    console.log("Events Connected");
+                }, false);
 
-              source.addEventListener('error', function(e) {
-                  if (e.target.readyState != EventSource.OPEN) {
-                  console.log("Events Disconnected");
-                  }
-              }, false);
+                source.addEventListener('error', function(e) {
+                    if (e.target.readyState != EventSource.OPEN) {
+                    console.log("Events Disconnected");
+                    }
+                }, false);
 
-              source.addEventListener('gyro_readings', function(e) {
-                  //console.log("gyro_readings", e.data);
-                  var obj = JSON.parse(e.data);
-                  document.getElementById("gyroX").innerHTML = obj.gyroX;
-                  document.getElementById("gyroY").innerHTML = obj.gyroY;
-                  document.getElementById("gyroZ").innerHTML = obj.gyroZ;
+                source.addEventListener('filtered_readings', function(e) {
+                  console.log("filtered_readings", e.data);
+                var obj = JSON.parse(e.data);
+                
+                // Atualiza a exibição dos dados de pitch, roll, yaw, acc e temp
+                document.getElementById("gyroX").innerHTML = obj.pitch;
+                document.getElementById("gyroY").innerHTML = obj.roll;
+                document.getElementById("gyroZ").innerHTML = obj.yaw;
+                document.getElementById("accX").innerHTML = obj.accX;
+                document.getElementById("accY").innerHTML = obj.accY;
+                document.getElementById("accZ").innerHTML = obj.accZ;
+                document.getElementById("temp").innerHTML = obj.temp;
 
-                  // Change cube rotation after receiving the readinds
-                  rocketGroup.rotation.x = obj.gyroY;
-                  rocketGroup.rotation.z = obj.gyroX;
-                  rocketGroup.rotation.y = obj.gyroZ;
-                  renderer.render(scene, camera);
-              }, false);
+                // Converte os ângulos de graus para radianos para o Three.js
+                rocketGroup.rotation.x = -obj.pitch * (Math.PI / 180);
+                rocketGroup.rotation.y = obj.yaw * (Math.PI / 180);
+                rocketGroup.rotation.z = -obj.roll * (Math.PI / 180);
 
-              source.addEventListener('temperature_reading', function(e) {
-                  console.log("temperature_reading", e.data);
-                  document.getElementById("temp").innerHTML = e.data;
-              }, false);
-
-              source.addEventListener('accelerometer_readings', function(e) {
-                  console.log("accelerometer_readings", e.data);
-                  var obj = JSON.parse(e.data);
-                  document.getElementById("accX").innerHTML = obj.accX;
-                  document.getElementById("accY").innerHTML = obj.accY;
-                  document.getElementById("accZ").innerHTML = obj.accZ;
-              }, false);
-            }
+                renderer.render(scene, camera);
+            }, false);
+                      }
 
             function resetPosition(element){
             var xhr = new XMLHttpRequest();
