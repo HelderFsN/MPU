@@ -1,8 +1,3 @@
-/*********
-  Rui Santos & Sara Santos - Random Nerd Tutorials
-  Complete project details at https://RandomNerdTutorials.com/esp32-mpu-6050-web-server/
-  Adaptado para MPU-9250 por ChatGPT
-*********/
 #include <Arduino.h>
 #include <WiFi.h>
 #include <AsyncTCP.h>
@@ -34,7 +29,6 @@ MPU9250 mpu;
 
 // Final angles after filtering
 float pitch, roll, yaw;
-float gyro_x_offset, gyro_y_offset, gyro_z_offset;
 
 // Complementary filter weights
 float alpha = 0.95;
@@ -57,33 +51,24 @@ void initWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-// Function to calibrate the gyroscope
-void calibrateMPU() {
-  Serial.println("Calibrating MPU9250...");
-  mpu.calibrateMPU9250(mpu.gyroBias, mpu.accelBias);
-  gyro_x_offset = mpu.gyroBias[0];
-  gyro_y_offset = mpu.gyroBias[1];
-  gyro_z_offset = mpu.gyroBias[2];
-  Serial.println("Calibration done.");
-}
-
 String getFilteredReadings(){
   float accX, accY, accZ;
   float gyroX_temp, gyroY_temp, gyroZ_temp;
   float magX, magY, magZ;
   float temp;
 
-  if (mpu.readSensor()) {
-    accX = mpu.accelX();
-    accY = mpu.accelY();
-    accZ = mpu.accelZ();
-    gyroX_temp = mpu.gyroX() - gyro_x_offset;
-    gyroY_temp = mpu.gyroY() - gyro_y_offset;
-    gyroZ_temp = mpu.gyroZ() - gyro_z_offset;
-    magX = mpu.magX();
-    magY = mpu.magY();
-    magZ = mpu.magZ();
-    temp = mpu.temperature();
+  // Usa a função update() que lê todos os sensores de uma vez
+  if (mpu.update()) {
+    accX = mpu.getAccX();
+    accY = mpu.getAccY();
+    accZ = mpu.getAccZ();
+    gyroX_temp = mpu.getGyroX();
+    gyroY_temp = mpu.getGyroY();
+    gyroZ_temp = mpu.getGyroZ();
+    magX = mpu.getMagX();
+    magY = mpu.getMagY();
+    magZ = mpu.getMagZ();
+    temp = mpu.getTemperature();
 
     float dt = (millis() - lastLoopTime) / 1000.0;
     lastLoopTime = millis();
@@ -123,16 +108,17 @@ void setup() {
   Wire.begin(41, 42); // SDA, SCL
   initWiFi();
   
-  // Initialize the MPU9250 sensor
-  if (!mpu.begin()) {
-    Serial.println("Could not find MPU9250.");
+  // Initialize and calibrate the MPU9250 sensor
+  if (!mpu.setup(0x68)) { // Change to 0x69 if needed
+    Serial.println("MPU9250 connection failed. Please check wiring.");
     while (1) {
-      delay(10);
+      delay(5000);
     }
   }
   
-  calibrateMPU();
-
+  Serial.println("MPU9250 found!");
+  // The setup() function for this library handles calibration internally.
+  
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", createHtml());
   }); 
@@ -163,6 +149,11 @@ void loop() {
   if ((millis() - lastLoopTime) > gyroDelay) {
     events.send(getFilteredReadings().c_str(),"filtered_readings",millis());
   }
+}
+
+// Seu createHtml() deve ser mantido aqui
+String createHtml() {
+  // ... (o seu código HTML original)
 }
 
 String createHtml() {
