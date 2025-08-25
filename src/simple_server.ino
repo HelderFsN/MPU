@@ -1,16 +1,20 @@
+/*********
+  Rui Santos & Sara Santos - Random Nerd Tutorials
+  Complete project details at https://RandomNerdTutorials.com/esp32-mpu-6050-web-server/
+  Adaptado para MPU-9250 por ChatGPT
+*********/
 #include <Arduino.h>
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <Adafruit_Sensor.h>
 #include <Arduino_JSON.h>
-#include <LittleFS.h>
 #include <Wire.h>
+#include "MPU9250.h"
 
 // Replace with your network credentials
 const char* ssid = "G6_2774";
 const char* password = "senhaforte";
-const int WIFI_CHANNEL = 6; // Speeds up the connection in Wokwi
+const int WIFI_CHANNEL = 6;
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
@@ -22,40 +26,20 @@ AsyncEventSource events("/events");
 JSONVar readings;
 
 // Timer variables
-unsigned long lastLoopTime = 0;  
+unsigned long lastLoopTime = 0;
 unsigned long gyroDelay = 10;
 
-// Create a sensor object
-const int MPU=0x68;
+// Create MPU9250 object
+MPU9250 mpu;
 
 // Final angles after filtering
 float pitch, roll, yaw;
+float gyro_x_offset, gyro_y_offset, gyro_z_offset;
 
-// Gyroscope sensor deviation
-float gyroXerror = 0.07;
-float gyroYerror = 0.03;
-float gyroZerror = 0.01;
+// Complementary filter weights
+float alpha = 0.95;
 
 #define PI 3.1415926535897932384626433832795
-
-// Init MPU6050
-void initMPU(){
-    // Set Gyroscope Full-Scale Range to +/- 500 deg/s
-  Wire.beginTransmission(MPU);
-  Wire.write(0x1B);
-  Wire.write(0x00); // FS_SEL = 0 (250 deg/s)
-  Wire.endTransmission(true);
-
-  // Set Accelerometer Full-Scale Range to +/- 4g
-  Wire.beginTransmission(MPU);
-  Wire.write(0x1C);
-  Wire.write(0x08); // AFS_SEL = 1 (4g)
-  Wire.endTransmission(true);
-  
-  //Inicializa o MPU-6050
-  Wire.write(0); 
-  Wire.endTransmission(true);
-}
 
 // Initialize WiFi
 void initWiFi() {
@@ -73,60 +57,63 @@ void initWiFi() {
   Serial.println(WiFi.localIP());
 }
 
+// Function to calibrate the gyroscope
+void calibrateMPU() {
+  Serial.println("Calibrating MPU9250...");
+  mpu.calibrateMPU9250(mpu.gyroBias, mpu.accelBias);
+  gyro_x_offset = mpu.gyroBias[0];
+  gyro_y_offset = mpu.gyroBias[1];
+  gyro_z_offset = mpu.gyroBias[2];
+  Serial.println("Calibration done.");
+}
+
 String getFilteredReadings(){
-  Wire.beginTransmission(MPU);
-  Wire.write(0x3B);  // starting with register 0x3B (ACCEL_XOUT_H)
-  Wire.endTransmission(false);
-  //Solicita os dados do sensor
-  Wire.requestFrom(MPU,14,true);  
+  float accX, accY, accZ;
+  float gyroX_temp, gyroY_temp, gyroZ_temp;
+  float magX, magY, magZ;
+  float temp;
 
-  // Get raw values
-  float accX_raw = Wire.read()<<8|Wire.read();
-  float accY_raw = Wire.read()<<8|Wire.read();
-  float accZ_raw = Wire.read()<<8|Wire.read();
-  float temp_raw = Wire.read()<<8|Wire.read();
-  float gyroX_raw = Wire.read()<<8|Wire.read();
-  float gyroY_raw = Wire.read()<<8|Wire.read();
-  float gyroZ_raw = Wire.read()<<8|Wire.read();
+  if (mpu.readSensor()) {
+    accX = mpu.accelX();
+    accY = mpu.accelY();
+    accZ = mpu.accelZ();
+    gyroX_temp = mpu.gyroX() - gyro_x_offset;
+    gyroY_temp = mpu.gyroY() - gyro_y_offset;
+    gyroZ_temp = mpu.gyroZ() - gyro_z_offset;
+    magX = mpu.magX();
+    magY = mpu.magY();
+    magZ = mpu.magZ();
+    temp = mpu.temperature();
 
-  // Convert raw values to Gs
-  float accX = accX_raw / 8192.0;
-  float accY = accY_raw / 8192.0;
-  float accZ = accZ_raw / 8192.0;
+    float dt = (millis() - lastLoopTime) / 1000.0;
+    lastLoopTime = millis();
 
-  // Convert raw gyro values to degrees per second
-  float gyroX_temp = gyroX_raw / 131.0;
-  float gyroY_temp = gyroY_raw / 131.0;
-  float gyroZ_temp = gyroZ_raw / 131.0;
+    // Complementary Filter for Pitch and Roll (using Gyro and Accel)
+    float roll_acc = atan2(accY, accZ) * 180 / PI;
+    float pitch_acc = atan2(-accX, sqrt(accY * accY + accZ * accZ)) * 180 / PI;
+    
+    pitch = alpha * (pitch + gyroX_temp * dt) + (1.0 - alpha) * pitch_acc;
+    roll = alpha * (roll + gyroY_temp * dt) + (1.0 - alpha) * roll_acc;
 
-  // Time elapsed since last loop (in seconds)
-  float dt = (millis() - lastLoopTime) / 1000.0;
-  lastLoopTime = millis();
+    // Complementary Filter for Yaw (using Gyro and Mag)
+    float yaw_mag = atan2(magY, magX) * 180 / PI;
+    yaw = alpha * (yaw + gyroZ_temp * dt) + (1.0 - alpha) * yaw_mag;
+    
+    // Normalize yaw to 0-360 degrees
+    if (yaw < 0) yaw += 360;
+    if (yaw > 360) yaw -= 360;
 
-  // ----- Complementary Filter -----
-
-  // Calculate pitch and roll angles from accelerometer
-  float roll_acc = atan2(accY, accZ) * 180 / PI;
-  float pitch_acc = atan2(-accX, sqrt(accY * accY + accZ * accZ)) * 180 / PI;
-  
-  // Apply the complementary filter
-  float alpha = 0.98; // Weight for the gyroscope
-  pitch = alpha * (pitch + gyroX_temp * dt) + (1.0 - alpha) * pitch_acc;
-  roll = alpha * (roll + gyroY_temp * dt) + (1.0 - alpha) * roll_acc;
-  
-  // Yaw (Z-axis) still accumulates since the accelerometer can't measure it
-  if(abs(gyroZ_temp) > gyroZerror) {
-    yaw += gyroZ_temp * dt;
+    readings["pitch"] = String(pitch);
+    readings["roll"] = String(roll);
+    readings["yaw"] = String(yaw);
+    readings["accX"] = String(accX);
+    readings["accY"] = String(accY);
+    readings["accZ"] = String(accZ);
+    readings["temp"] = String(temp);
+  } else {
+    // Return last known values if sensor read fails
   }
 
-  readings["pitch"] = String(pitch);
-  readings["roll"] = String(roll);
-  readings["yaw"] = String(yaw);
-  readings["accX"] = String(accX);
-  readings["accY"] = String(accY);
-  readings["accZ"] = String(accZ);
-  readings["temp"] = String(temp_raw/340.00+36.53); // Converte para °C
-  
   String jsonString = JSON.stringify(readings);
   return jsonString;
 }
@@ -135,14 +122,21 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(41, 42); // SDA, SCL
   initWiFi();
-  initMPU();
+  
+  // Initialize the MPU9250 sensor
+  if (!mpu.begin()) {
+    Serial.println("Could not find MPU9250.");
+    while (1) {
+      delay(10);
+    }
+  }
+  
+  calibrateMPU();
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", createHtml());
   }); 
 
-  // Remove as rotas individuais de sensores, pois agora teremos apenas uma
-  // As rotas de reset podem continuar
   server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request){
     pitch = 0; roll = 0; yaw = 0;
     request->send(200, "text/plain", "OK");
@@ -167,7 +161,6 @@ void setup() {
 
 void loop() {
   if ((millis() - lastLoopTime) > gyroDelay) {
-    // Send Events to the Web Server with the Sensor Readings
     events.send(getFilteredReadings().c_str(),"filtered_readings",millis());
   }
 }
