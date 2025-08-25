@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "author": "gerado por uma IA, Wokwi Diagram",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-v1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-mpu6050", "id": "mpu", "top": 100, "left": 400, "attrs": {} }
+  ],
+  "connections": [
+    [ "esp:TX0", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX0", "$serialMonitor:TX", "", [] ],
+    ["esp:3V3", "mpu:VCC", "red", ["h-5", "v-10", "h-12"]],
+    ["esp:GND.1", "mpu:GND", "black", ["h-5", "v-15", "h-15"]],
+    ["esp:D22", "mpu:SCL", "blue", ["h-5", "v-10", "h-12"]],
+    ["esp:D21", "mpu:SDA", "green", ["h-5", "v-15", "h-15"]]
+  ],
+  "fs": {
+    "spiffs": [
+      "missile.glb"
+    ]
+  }
+}

@@ -1,0 +1,233 @@
+<!--
+        Rui Santos
+        Complete project details at https://RandomNerdTutorials.com/esp32-mpu-6050-web-server/
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.
+        The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+        -->
+
+        <!DOCTYPE HTML><html>
+        <head>
+        <title>ESP Web Server</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="icon" href="data:,">
+        <style>
+            html {
+            font-family: Arial;
+            display: inline-block;
+            text-align: center;
+            }
+            p {
+            font-size: 1.2rem;
+            }
+            body {
+            margin: 0;
+            }
+            .topnav {
+            overflow: hidden;
+            background-color: #003366;
+            color: #FFD43B;
+            font-size: 1rem;
+            }
+            .content {
+            padding: 20px;
+            }
+            .card {
+            background-color: white;
+            box-shadow: 2px 2px 12px 1px rgba(140,140,140,.5);
+            }
+            .card-title {
+            color:#003366;
+            font-weight: bold;
+            }
+            .cards {
+            max-width: 800px;
+            margin: 0 auto;
+            display: grid; grid-gap: 2rem;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            }
+            .reading {
+            font-size: 1.2rem;
+            }
+            .cube-content{
+            width: 100%;
+            background-color: white;
+            height: 400px; margin: auto;
+            padding-top:2%;
+            }
+            #reset{
+            border: none;
+            color: #FEFCFB;
+            background-color: #003366;
+            padding: 10px;
+            text-align: center;
+            display: inline-block;
+            font-size: 14px; width: 150px;
+            border-radius: 4px;
+            }
+            #resetX, #resetY, #resetZ{
+            border: none;
+            color: #FEFCFB;
+            background-color: #003366;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            text-align: center;
+            display: inline-block;
+            font-size: 14px;
+            width: 20px;
+            border-radius: 4px;
+            }
+  </style>
+        <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/107/three.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/three@0.107.0/examples/js/loaders/GLTFLoader.js"></script>
+        </head>
+        <body>
+        <div class="topnav">
+            <h1><i class="far fa-compass"></i> MPU6050 <i class="far fa-compass"></i></h1>
+        </div>
+        <div class="content">
+            <div class="cards">
+            <div class="card">
+                <p class="card-title">GYROSCOPE</p>
+                <p><span class="reading">X: <span id="gyroX"></span> rad</span></p>
+                <p><span class="reading">Y: <span id="gyroY"></span> rad</span></p>
+                <p><span class="reading">Z: <span id="gyroZ"></span> rad</span></p>
+            </div>
+            <div class="card">
+                <p class="card-title">ACCELEROMETER</p>
+                <p><span class="reading">X: <span id="accX"></span> ms<sup>2</sup></span></p>
+                <p><span class="reading">Y: <span id="accY"></span> ms<sup>2</sup></span></p>
+                <p><span class="reading">Z: <span id="accZ"></span> ms<sup>2</sup></span></p>
+            </div>
+            <div class="card">
+                <p class="card-title">TEMPERATURE</p>
+                <p><span class="reading"><span id="temp"></span> &deg;C</span></p>
+                <p class="card-title">3D ANIMATION</p>
+                <button id="reset" onclick="resetPosition(this)">RESET POSITION</button>
+                <button id="resetX" onclick="resetPosition(this)">X</button>
+                <button id="resetY" onclick="resetPosition(this)">Y</button>
+                <button id="resetZ" onclick="resetPosition(this)">Z</button>
+            </div>
+            </div>
+            <div class="cube-content">
+            <div id="3Dcube"></div>
+            </div>
+        </div>
+        <script>
+                    /*
+            Rui Santos
+            Complete project details at https://RandomNerdTutorials.com/esp32-mpu-6050-web-server/
+
+            Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.
+            The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+            */
+
+            let scene, camera, renderer, rocket3D;
+
+            function init3D(){
+              scene = new THREE.Scene();
+              scene.background = new THREE.Color(0xffffff);
+
+              camera = new THREE.PerspectiveCamera(
+                75,
+                parentWidth(document.getElementById("3Dcube")) / parentHeight(document.getElementById("3Dcube")),
+                0.1,
+                1000
+              );
+
+              renderer = new THREE.WebGLRenderer({ antialias: true });
+              renderer.setSize(
+                parentWidth(document.getElementById("3Dcube")),
+                parentHeight(document.getElementById("3Dcube"))
+              );
+
+              document.getElementById('3Dcube').appendChild(renderer.domElement);
+
+              // Carregue o modelo 3D do foguete (GLB)
+              const loader = new THREE.GLTFLoader();
+              loader.load('https://venerable-crostata-1c405a.netlify.app/electron_-_rocket_lab.glb', function(gltf) {
+                rocket3D = gltf.scene;
+                rocket3D.scale.set(0.4, 0.4, 0.4);
+                rocket3D.position.y = -2;
+                rocket3D.rotation.x = -1.5;
+                scene.add(rocket3D);
+                camera.position.z = 7;
+                renderer.render(scene, camera);
+              });
+            }
+
+            // Resize the 3D object when the browser window changes size
+            function onWindowResize(){
+            camera.aspect = parentWidth(document.getElementById("3Dcube")) / parentHeight(document.getElementById("3Dcube"));
+            //camera.aspect = window.innerWidth /  window.innerHeight;
+            camera.updateProjectionMatrix();
+            //renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setSize(parentWidth(document.getElementById("3Dcube")), parentHeight(document.getElementById("3Dcube")));
+
+            }
+
+            window.addEventListener('resize', onWindowResize, false);
+
+            // Create the 3D representation
+            init3D();
+
+            // Create events for the sensor readings
+            if (!!window.EventSource) {
+              var source = new EventSource('/events');
+
+              source.addEventListener('open', function(e) {
+                  console.log("Events Connected");
+              }, false);
+
+              source.addEventListener('error', function(e) {
+                  if (e.target.readyState != EventSource.OPEN) {
+                  console.log("Events Disconnected");
+                  }
+              }, false);
+
+              source.addEventListener('gyro_readings', function(e) {
+                  //console.log("gyro_readings", e.data);
+                  var obj = JSON.parse(e.data);
+                  document.getElementById("gyroX").innerHTML = obj.gyroX;
+                  document.getElementById("gyroY").innerHTML = obj.gyroY;
+                  document.getElementById("gyroZ").innerHTML = obj.gyroZ;
+
+                  // Change cube rotation after receiving the readinds
+                  rocket3D.rotation.x = obj.gyroY;
+                  rocket3D.rotation.z = obj.gyroX;
+                  rocket3D.rotation.y = obj.gyroZ;
+                  renderer.render(scene, camera);
+              }, false);
+
+              source.addEventListener('temperature_reading', function(e) {
+                  console.log("temperature_reading", e.data);
+                  document.getElementById("temp").innerHTML = e.data;
+              }, false);
+
+              source.addEventListener('accelerometer_readings', function(e) {
+                  console.log("accelerometer_readings", e.data);
+                  var obj = JSON.parse(e.data);
+                  document.getElementById("accX").innerHTML = obj.accX;
+                  document.getElementById("accY").innerHTML = obj.accY;
+                  document.getElementById("accZ").innerHTML = obj.accZ;
+              }, false);
+            }
+
+            function resetPosition(element){
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "/"+element.id, true);
+            console.log(element.id);
+            xhr.send();
+            }
+
+            function parentWidth(elem) {
+              return elem.parentElement.clientWidth;
+            }
+
+            function parentHeight(elem) {
+              return elem.parentElement.clientHeight;
+            }
+        </script>
+        </body>
+        </html>
