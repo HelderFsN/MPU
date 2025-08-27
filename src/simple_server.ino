@@ -151,11 +151,6 @@ void loop() {
   }
 }
 
-// Seu createHtml() deve ser mantido aqui
-String createHtml() {
-  // ... (o seu código HTML original)
-}
-
 String createHtml() {
 
 String html = R"rawliteral( 
