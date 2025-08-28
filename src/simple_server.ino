@@ -4,7 +4,6 @@
 #include <ESPAsyncWebServer.h>
 #include <Arduino_JSON.h>
 #include <Wire.h>
-#include "MPU9250.h"
 
 // Replace with your network credentials
 const char* ssid = "G6_2774";
@@ -21,45 +20,29 @@ AsyncEventSource events("/events");
 JSONVar readings;
 
 // Timer variables
-unsigned long lastTime = 0;  
-unsigned long lastTimeTemperature = 0;
-unsigned long lastTimeAcc = 0;
+unsigned long lastLoopTime = 0;
 unsigned long gyroDelay = 10;
-unsigned long temperatureDelay = 1000;
-unsigned long accelerometerDelay = 200;
 
-// Create a sensor object
-const int MPU=0x68;
-
-sensors_event_t a, g, temp;
-
-float gyroX, gyroY, gyroZ;
-float accX, accY, accZ;
-float temperature;
+// Final angles after filtering
+float pitch, roll, yaw;
 
 // Complementary filter weights
 float alpha = 0.95;
 
 #define PI 3.1415926535897932384626433832795
 
-// Init MPU6050
-void initMPU(){
-    // Set Gyroscope Full-Scale Range to +/- 500 deg/s
-  Wire.beginTransmission(MPU);
-  Wire.write(0x1B);
-  Wire.write(0x00); // FS_SEL = 0 (250 deg/s)
-  Wire.endTransmission(true);
+// I2C Addresses
+const uint8_t MPU9250_ADDRESS = 0x68;
 
-  // Set Accelerometer Full-Scale Range to +/- 4g
-  Wire.beginTransmission(MPU);
-  Wire.write(0x1C);
-  Wire.write(0x08); // AFS_SEL = 1 (4g)
-  Wire.endTransmission(true);
-  
-  //Inicializa o MPU-6050
-  Wire.write(0); 
-  Wire.endTransmission(true);
-}
+// MPU9250 Registers
+const uint8_t ACCEL_XOUT_H = 0x3B;
+const uint8_t TEMP_OUT_H = 0x41;
+const uint8_t GYRO_XOUT_H = 0x43;
+const uint8_t PWR_MGMT_1 = 0x6B;
+
+// Sensibilidade para conversão de dados brutos
+float accel_sensibility = 16384.0; // +/- 2g
+float gyro_sensibility = 131.0;    // +/- 250 deg/s
 
 // Initialize WiFi
 void initWiFi() {
@@ -77,37 +60,88 @@ void initWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-String getGyroReadings(){
-  Wire.beginTransmission(MPU);
-  Wire.write(0x3B);  // starting with register 0x3B (ACCEL_XOUT_H)
+// Função para escrever um byte em um registrador I2C
+void writeByte(uint8_t address, uint8_t subAddress, uint8_t data) {
+  Wire.beginTransmission(address);
+  Wire.write(subAddress);
+  Wire.write(data);
+  Wire.endTransmission(true);
+}
+
+// Função para ler um conjunto de bytes de um registrador I2C
+void readBytes(uint8_t address, uint8_t subAddress, uint8_t count, uint8_t* dest) {
+  Wire.beginTransmission(address);
+  Wire.write(subAddress);
   Wire.endTransmission(false);
-  //Solicita os dados do sensor
-  Wire.requestFrom(MPU,14,true);  
-
-  float gyroX_temp_raw = Wire.read()<<8|Wire.read();
-  float gyroY_temp_raw = Wire.read()<<8|Wire.read();
-  float gyroZ_temp_raw = Wire.read()<<8|Wire.read();
-
-  // Sensitivity scale factor for +/- 250 deg/s is 131.0
-  // Convert raw values to degrees per second
-  float gyroX_temp = (gyroX_temp_raw / 131.0) * (PI / 180.0);
-  float gyroY_temp = (gyroY_temp_raw / 131.0) * (PI / 180.0);
-  float gyroZ_temp = (gyroZ_temp_raw / 131.0) * (PI / 180.0);
-
-  if(abs(gyroX_temp) > gyroXerror) {
-    gyroX += gyroX_temp/50.00;
+  Wire.requestFrom(address, count, true);
+  for (uint8_t i = 0; i < count; i++) {
+    dest[i] = Wire.read();
   }
+}
 
-  if(abs(gyroY_temp) > gyroYerror) {
-    gyroY += gyroY_temp/70.00;
-  }
-  if(abs(gyroZ_temp) > gyroZerror) {
-    gyroZ += gyroZ_temp/90.00;  
-  }
+// Inicializa e calibra o MPU9250 (agora apenas acelerômetro e giroscópio)
+bool setupMPU9250() {
+  // Acorda o MPU9250
+  writeByte(MPU9250_ADDRESS, PWR_MGMT_1, 0x00);
+  delay(100);
+  
+  return true;
+}
 
-  readings["gyroX"] = String(gyroX);
-  readings["gyroY"] = String(gyroY);
-  readings["gyroZ"] = String(gyroZ);
+// Lê os dados brutos do MPU9250
+bool readMPU9250Data(float &accX, float &accY, float &accZ, float &gyroX, float &gyroY, float &gyroZ, float &temp) {
+  uint8_t rawData[14];
+  
+  // Lê os dados do acelerômetro, giroscópio e temperatura
+  readBytes(MPU9250_ADDRESS, ACCEL_XOUT_H, 14, rawData);
+
+  // Combina os bytes e converte para float
+  accX = (int16_t)(((int16_t)rawData[0] << 8) | rawData[1]) / accel_sensibility;
+  accY = (int16_t)(((int16_t)rawData[2] << 8) | rawData[3]) / accel_sensibility;
+  accZ = (int16_t)(((int16_t)rawData[4] << 8) | rawData[5]) / accel_sensibility;
+  
+  temp = (int16_t)(((int16_t)rawData[6] << 8) | rawData[7]) / 333.87 + 21.0;
+  
+  gyroX = (int16_t)(((int16_t)rawData[8] << 8) | rawData[9]) / gyro_sensibility;
+  gyroY = (int16_t)(((int16_t)rawData[10] << 8) | rawData[11]) / gyro_sensibility;
+  gyroZ = (int16_t)(((int16_t)rawData[12] << 8) | rawData[13]) / gyro_sensibility;
+  
+  return true;
+}
+
+String getFilteredReadings(){
+  float accX, accY, accZ;
+  float gyroX_temp, gyroY_temp, gyroZ_temp;
+  float temp;
+
+  if (readMPU9250Data(accX, accY, accZ, gyroX_temp, gyroY_temp, gyroZ_temp, temp)) {
+    float dt = (millis() - lastLoopTime) / 1000.0;
+    lastLoopTime = millis();
+
+    // Complementary Filter for Pitch and Roll (using Gyro and Accel)
+    float roll_acc = atan2(accY, accZ) * 180 / PI;
+    float pitch_acc = atan2(-accX, sqrt(accY * accY + accZ * accZ)) * 180 / PI;
+    
+    pitch = alpha * (pitch + gyroX_temp * dt) + (1.0 - alpha) * pitch_acc;
+    roll = alpha * (roll + gyroY_temp * dt) + (1.0 - alpha) * roll_acc;
+
+    // Yaw will now be calculated only from the gyroscope
+    yaw += gyroZ_temp * dt;
+    
+    // Normalize yaw to 0-360 degrees
+    if (yaw < 0) yaw += 360;
+    if (yaw > 360) yaw -= 360;
+
+    readings["pitch"] = String(pitch);
+    readings["roll"] = String(roll);
+    readings["yaw"] = String(yaw);
+    readings["accX"] = String(accX);
+    readings["accY"] = String(accY);
+    readings["accZ"] = String(accZ);
+    readings["temp"] = String(temp);
+  } else {
+    // Return last known values if sensor read fails
+  }
 
   String jsonString = JSON.stringify(readings);
   return jsonString;
@@ -117,8 +151,16 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(41, 42); // SDA, SCL
   initWiFi();
-  initMPU();
-
+  
+  if (!setupMPU9250()) {
+    Serial.println("MPU9250 connection failed. Please check wiring.");
+    while (1) {
+      delay(5000);
+    }
+  }
+  
+  Serial.println("MPU9250 found!");
+  
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", createHtml());
   }); 
@@ -146,22 +188,9 @@ void setup() {
 }
 
 void loop() {
-    if ((millis() - lastTime) > gyroDelay) {
-    // Send Events to the Web Server with the Sensor Readings
-    events.send(getGyroReadings().c_str(),"gyro_readings",millis());
-    lastTime = millis();
+  if ((millis() - lastLoopTime) > gyroDelay) {
+    events.send(getFilteredReadings().c_str(),"filtered_readings",millis());
   }
-  if ((millis() - lastTimeAcc) > accelerometerDelay) {
-    // Send Events to the Web Server with the Sensor Readings
-    events.send(getAccReadings().c_str(),"accelerometer_readings",millis());
-    lastTimeAcc = millis();
-  }
-  if ((millis() - lastTimeTemperature) > temperatureDelay) {
-    // Send Events to the Web Server with the Sensor Readings
-    events.send(getTemperature().c_str(),"temperature_reading",millis());
-    lastTimeTemperature = millis();
-  }
-  delay(100);
 }
 
 
