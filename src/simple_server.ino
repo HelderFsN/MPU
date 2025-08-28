@@ -21,19 +21,45 @@ AsyncEventSource events("/events");
 JSONVar readings;
 
 // Timer variables
-unsigned long lastLoopTime = 0;
+unsigned long lastTime = 0;  
+unsigned long lastTimeTemperature = 0;
+unsigned long lastTimeAcc = 0;
 unsigned long gyroDelay = 10;
+unsigned long temperatureDelay = 1000;
+unsigned long accelerometerDelay = 200;
 
-// Create MPU9250 object
-MPU9250 mpu;
+// Create a sensor object
+const int MPU=0x68;
 
-// Final angles after filtering
-float pitch, roll, yaw;
+sensors_event_t a, g, temp;
+
+float gyroX, gyroY, gyroZ;
+float accX, accY, accZ;
+float temperature;
 
 // Complementary filter weights
 float alpha = 0.95;
 
 #define PI 3.1415926535897932384626433832795
+
+// Init MPU6050
+void initMPU(){
+    // Set Gyroscope Full-Scale Range to +/- 500 deg/s
+  Wire.beginTransmission(MPU);
+  Wire.write(0x1B);
+  Wire.write(0x00); // FS_SEL = 0 (250 deg/s)
+  Wire.endTransmission(true);
+
+  // Set Accelerometer Full-Scale Range to +/- 4g
+  Wire.beginTransmission(MPU);
+  Wire.write(0x1C);
+  Wire.write(0x08); // AFS_SEL = 1 (4g)
+  Wire.endTransmission(true);
+  
+  //Inicializa o MPU-6050
+  Wire.write(0); 
+  Wire.endTransmission(true);
+}
 
 // Initialize WiFi
 void initWiFi() {
@@ -51,53 +77,37 @@ void initWiFi() {
   Serial.println(WiFi.localIP());
 }
 
-String getFilteredReadings(){
-  float accX, accY, accZ;
-  float gyroX_temp, gyroY_temp, gyroZ_temp;
-  float magX, magY, magZ;
-  float temp;
+String getGyroReadings(){
+  Wire.beginTransmission(MPU);
+  Wire.write(0x3B);  // starting with register 0x3B (ACCEL_XOUT_H)
+  Wire.endTransmission(false);
+  //Solicita os dados do sensor
+  Wire.requestFrom(MPU,14,true);  
 
-  // Usa a função update() que lê todos os sensores de uma vez
-  if (mpu.update()) {
-    accX = mpu.getAccX();
-    accY = mpu.getAccY();
-    accZ = mpu.getAccZ();
-    gyroX_temp = mpu.getGyroX();
-    gyroY_temp = mpu.getGyroY();
-    gyroZ_temp = mpu.getGyroZ();
-    magX = mpu.getMagX();
-    magY = mpu.getMagY();
-    magZ = mpu.getMagZ();
-    temp = mpu.getTemperature();
+  float gyroX_temp_raw = Wire.read()<<8|Wire.read();
+  float gyroY_temp_raw = Wire.read()<<8|Wire.read();
+  float gyroZ_temp_raw = Wire.read()<<8|Wire.read();
 
-    float dt = (millis() - lastLoopTime) / 1000.0;
-    lastLoopTime = millis();
+  // Sensitivity scale factor for +/- 250 deg/s is 131.0
+  // Convert raw values to degrees per second
+  float gyroX_temp = (gyroX_temp_raw / 131.0) * (PI / 180.0);
+  float gyroY_temp = (gyroY_temp_raw / 131.0) * (PI / 180.0);
+  float gyroZ_temp = (gyroZ_temp_raw / 131.0) * (PI / 180.0);
 
-    // Complementary Filter for Pitch and Roll (using Gyro and Accel)
-    float roll_acc = atan2(accY, accZ) * 180 / PI;
-    float pitch_acc = atan2(-accX, sqrt(accY * accY + accZ * accZ)) * 180 / PI;
-    
-    pitch = alpha * (pitch + gyroX_temp * dt) + (1.0 - alpha) * pitch_acc;
-    roll = alpha * (roll + gyroY_temp * dt) + (1.0 - alpha) * roll_acc;
-
-    // Complementary Filter for Yaw (using Gyro and Mag)
-    float yaw_mag = atan2(magY, magX) * 180 / PI;
-    yaw = alpha * (yaw + gyroZ_temp * dt) + (1.0 - alpha) * yaw_mag;
-    
-    // Normalize yaw to 0-360 degrees
-    if (yaw < 0) yaw += 360;
-    if (yaw > 360) yaw -= 360;
-
-    readings["pitch"] = String(pitch);
-    readings["roll"] = String(roll);
-    readings["yaw"] = String(yaw);
-    readings["accX"] = String(accX);
-    readings["accY"] = String(accY);
-    readings["accZ"] = String(accZ);
-    readings["temp"] = String(temp);
-  } else {
-    // Return last known values if sensor read fails
+  if(abs(gyroX_temp) > gyroXerror) {
+    gyroX += gyroX_temp/50.00;
   }
+
+  if(abs(gyroY_temp) > gyroYerror) {
+    gyroY += gyroY_temp/70.00;
+  }
+  if(abs(gyroZ_temp) > gyroZerror) {
+    gyroZ += gyroZ_temp/90.00;  
+  }
+
+  readings["gyroX"] = String(gyroX);
+  readings["gyroY"] = String(gyroY);
+  readings["gyroZ"] = String(gyroZ);
 
   String jsonString = JSON.stringify(readings);
   return jsonString;
@@ -107,18 +117,8 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(41, 42); // SDA, SCL
   initWiFi();
-  
-  // Initialize and calibrate the MPU9250 sensor
-  if (!mpu.setup(0x68)) { // Change to 0x69 if needed
-    Serial.println("MPU9250 connection failed. Please check wiring.");
-    while (1) {
-      delay(5000);
-    }
-  }
-  
-  Serial.println("MPU9250 found!");
-  // The setup() function for this library handles calibration internally.
-  
+  initMPU();
+
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/html", createHtml());
   }); 
@@ -146,10 +146,24 @@ void setup() {
 }
 
 void loop() {
-  if ((millis() - lastLoopTime) > gyroDelay) {
-    events.send(getFilteredReadings().c_str(),"filtered_readings",millis());
+    if ((millis() - lastTime) > gyroDelay) {
+    // Send Events to the Web Server with the Sensor Readings
+    events.send(getGyroReadings().c_str(),"gyro_readings",millis());
+    lastTime = millis();
   }
+  if ((millis() - lastTimeAcc) > accelerometerDelay) {
+    // Send Events to the Web Server with the Sensor Readings
+    events.send(getAccReadings().c_str(),"accelerometer_readings",millis());
+    lastTimeAcc = millis();
+  }
+  if ((millis() - lastTimeTemperature) > temperatureDelay) {
+    // Send Events to the Web Server with the Sensor Readings
+    events.send(getTemperature().c_str(),"temperature_reading",millis());
+    lastTimeTemperature = millis();
+  }
+  delay(100);
 }
+
 
 String createHtml() {
 
@@ -391,4 +405,4 @@ String html = R"rawliteral(
 
 return html;
 
-} 
+}
